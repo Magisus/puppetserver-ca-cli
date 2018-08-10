@@ -28,6 +28,14 @@ RSpec.describe Puppetserver::Ca::Cli do
       /.*Usage:.* puppetserver ca generate.*Display this generate specific help output.*/m
   end
 
+  describe 'the generate action' do
+    let(:usage) { /.*Usage:.* puppetserver ca generate.*Display this generate specific help output.*/m }
+
+    include_examples 'basic cli args',
+      'generate',
+      /.*Usage:.* puppetserver ca generate.*Display this generate specific help output.*/m
+  end
+
   describe 'the import action' do
     include_examples 'basic cli args',
       'import',
