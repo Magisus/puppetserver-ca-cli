@@ -172,8 +172,8 @@ Options:
 
         errors = Utils.parse_with_errors(parser, args)
 
-        if check_flag_usage(results)
-          errors << check_flag_usage(results)
+        if err = check_flag_usage(results)
+          errors << err
         end
 
         errors_were_handled = Utils.handle_errors(@logger, errors, parser.help)

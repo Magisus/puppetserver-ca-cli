@@ -30,17 +30,17 @@ module Puppetserver
 Usage:
   puppetserver ca generate [--help]
   puppetserver ca generate [--config PATH]
-  puppetserver ca generate [--subject-alt-names ALTNAME[,ADDLALTNAME]]
+  puppetserver ca generate [--subject-alt-names ALTNAME1[,ALTNAME2...]]
 
 Description:
 Generate a root and intermediate signing CA for Puppet Server
 and store generated CA keys, certs, and crls on disk.
 
-The `--subject-alt-names` flag can be used to add SANs to the CA
-signing cert. Multiple names can be listed as a comma separated
-string. These can be either DNS names or IP addresses, differentiated
-by prefixes: `DNS:foo.bar.com,IP:123.456.789`. Names with no prefix
-will be treated as DNS names.
+The `--subject-alt-names` flag can be used to add SANs to the
+certificate generated for the Puppet master. Multiple names can be
+listed as a comma separated string. These can be either DNS names or
+IP addresses, differentiated by prefixes: `DNS:foo.bar.com,IP:123.456.789`.
+Names with no prefix will be treated as DNS names.
 
 To determine the target location, the default puppet.conf
 is consulted for custom values. If using a custom puppet.conf
@@ -188,6 +188,12 @@ BANNER
         cert
       end
 
+      # Given any alt names specified on the command line and any loaded from
+      # settings, choose the names with the highest precedence and process them.
+      # Precedence:
+      # 1) Specified on the CLI
+      # 2) Specified in settings
+      # 3) Defaults
       def choose_alt_names(cli_alt_names, settings_alt_names)
         if !cli_alt_names.empty?
           sans = cli_alt_names
@@ -212,43 +218,14 @@ BANNER
       end
 
       def parse(cli_args)
-        parser, inputs, unparsed = parse_inputs(cli_args)
+        results = {}
+        parser = self.class.parser(results)
 
-        if !unparsed.empty?
-          @logger.err 'Error:'
-          @logger.err 'Unknown arguments or flags:'
-          unparsed.each do |arg|
-            @logger.err "    #{arg}"
-          end
+        errors = Utils.parse_with_errors(parser, cli_args)
 
-          @logger.err ''
-          @logger.err parser.help
-
-          exit_code = 1
-        else
-          exit_code = nil
-        end
-
-        return inputs, exit_code
-      end
-
-      def parse_inputs(inputs)
-        parsed = {}
-        unparsed = []
-
-        parser = self.class.parser(parsed)
-
-        begin
-          parser.order!(inputs) do |nonopt|
-            unparsed << nonopt
-          end
-        rescue OptionParser::ParseError => e
-          unparsed += e.args
-          unparsed << inputs.shift unless inputs.first =~ /^-{1,2}/
-          retry
-        end
-
-        return parser, parsed, unparsed
+        errors_were_handled = Utils.handle_errors(@logger, errors, parser.help)
+        exit_code = errors_were_handled ? 1 : nil
+        return results, exit_code
       end
 
       def self.parser(parsed = {})
@@ -261,9 +238,9 @@ BANNER
           opts.on('--config CONF', 'Path to puppet.conf') do |conf|
             parsed['config'] = conf
           end
-          opts.on('--subject-alt-names NAMES',
+          opts.on('--subject-alt-names NAME1[,NAME2]',
                   'Subject alternative names for the CA signing cert') do |sans|
-            parsed['subject_alt_names'] = sans || ''
+            parsed['subject_alt_names'] = sans
           end
         end
       end

@@ -4,15 +4,21 @@ require 'utils/ssl'
 require 'tmpdir'
 require 'fileutils'
 
-require 'puppetserver/ca/import_action'
 require 'puppetserver/ca/cli'
+require 'puppetserver/ca/generate_action'
+require 'puppetserver/ca/logger'
+require 'puppetserver/utils/signing_digest'
+require 'puppetserver/ca/host'
 
 RSpec.describe Puppetserver::Ca::GenerateAction do
   include Utils::SSL
 
   let(:stdout) { StringIO.new }
   let(:stderr) { StringIO.new }
+  let(:logger) { Puppetserver::Ca::Logger.new(:info, stdout, stderr) }
   let(:usage) { /.*Usage:.* puppetserver ca generate.*Display this generate specific help output.*/m }
+
+  subject { Puppetserver::Ca::GenerateAction.new(logger) }
 
   it 'prints the help output & returns 1 if invalid flags are given' do
     exit_code = Puppetserver::Ca::Cli.run(['generate', '--hello'], stdout, stderr)
@@ -35,7 +41,7 @@ RSpec.describe Puppetserver::Ca::GenerateAction do
   it 'generates a bundle ca_crt file, ca_key, int_key, and ca_crl file' do
     Dir.mktmpdir do |tmpdir|
       with_temp_dirs tmpdir do |conf|
-        exit_code = Puppetserver::Ca::Cli.run(['generate', '--config', conf], stdout, stderr)
+        exit_code = subject.run({ 'config' => conf, 'subject_alt_names' => '' })
         expect(exit_code).to eq(0)
         expect(File.exist?(File.join(tmpdir, 'ca', 'ca_crt.pem'))).to be true
         expect(File.exist?(File.join(tmpdir, 'ca', 'ca_key.pem'))).to be true
@@ -63,13 +69,14 @@ RSpec.describe Puppetserver::Ca::GenerateAction do
     end
 
     it 'adds subject alt names to the intermediate CA cert' do
-      digest = subject.default_signing_digest
+      digest = Puppetserver::Utils::SigningDigest.new.digest
+      host = Puppetserver::Ca::Host.new(digest)
       valid_until = Time.now + 1000
 
-      root_key = subject.create_private_key(4096)
+      root_key = host.create_private_key(4096)
       root_cert = subject.self_signed_ca(root_key, "root", valid_until, digest)
-      int_key = subject.create_private_key(4096)
-      int_csr = subject.create_csr(int_key, "int_ca", digest)
+      int_key = host.create_private_key(4096)
+      int_csr = host.create_csr("int_ca", int_key)
       int_cert = subject.sign_intermediate(root_key, root_cert, int_csr, valid_until, digest, "DNS:bar.net, IP:123.123.0.1")
       expect(int_cert.extensions[4].to_s).to eq("subjectAltName = DNS:bar.net, IP Address:123.123.0.1")
     end
