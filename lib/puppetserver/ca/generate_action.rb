@@ -15,7 +15,20 @@ module Puppetserver
         ["basicConstraints", "CA:TRUE", true],
         ["keyUsage", "keyCertSign, cRLSign", true],
         ["subjectKeyIdentifier", "hash", false],
+        ["nsComment", "Puppet Server Internal Certificate", false],
         ["authorityKeyIdentifier", "keyid:always", false]
+      ].freeze
+
+      SSL_SERVER_CERT = "1.3.6.1.5.5.7.3.1"
+      SSL_CLIENT_CERT = "1.3.6.1.5.5.7.3.2"
+
+      MASTER_EXTENSIONS = [
+        ["basicConstraints", "CA:FALSE", true],
+        ["nsComment", "Puppet Server Internal Certificate", false],
+        ["authorityKeyIdentifier", "keyid:always", false],
+        ["extendedKeyUsage", "#{SSL_SERVER_CERT}, #{SSL_CLIENT_CERT}", true],
+        ["keyUsage", "keyEncipherment, digitalSignature", true],
+        ["subjectKeyIdentifier", "hash", false]
       ].freeze
 
       # Make the certificate valid as of yesterday, because so many people's
@@ -69,11 +82,13 @@ BANNER
         signer = SigningDigest.new
         return 1 if Utils.handle_errors(@logger, signer.errors)
 
-        subject_alt_names = choose_alt_names(input['subject_alt_names'], puppet.settings[:subject_alt_names])
+        subject_alt_names = choose_alt_names(input['subject_alt_names'],
+                                             puppet.settings[:subject_alt_names],
+                                             puppet.settings[:certname])
 
         # Generate root and intermediate ca and put all the certificates, crls,
         # and keys where they should go.
-        generate_root_and_intermediate_ca(puppet.settings, signer.digest, subject_alt_names)
+        generate_pki(puppet.settings, signer.digest, subject_alt_names)
 
         # Puppet's internal CA expects these file to exist.
         FileUtilities.ensure_file(puppet.settings[:serial], "001", 0640)
@@ -83,7 +98,7 @@ BANNER
         return 0
       end
 
-      def generate_root_and_intermediate_ca(settings, signing_digest, subject_alt_names = '')
+      def generate_pki(settings, signing_digest, subject_alt_names)
         valid_until = Time.now + settings[:ca_ttl]
         host = Puppetserver::Ca::Host.new(signing_digest)
 
@@ -93,19 +108,38 @@ BANNER
 
         int_key = host.create_private_key(settings[:keylength])
         int_csr = host.create_csr(settings[:ca_name], int_key)
-        int_cert = sign_intermediate(root_key, root_cert, int_csr, valid_until, signing_digest, subject_alt_names)
+        int_cert = sign_intermediate(root_key, root_cert, int_csr, valid_until, signing_digest)
         int_crl = create_crl_for(int_cert, int_key, valid_until, signing_digest)
 
-        FileUtilities.ensure_dir(settings[:cadir])
+        master_key = host.create_private_key(settings[:keylength])
+        master_csr = host.create_csr(settings[:certname], master_key)
+        master_cert = sign_master_cert(int_key, int_cert, master_csr,
+                                       valid_until, signing_digest, subject_alt_names)
 
-        file_properties = [
+        FileUtilities.ensure_dir(settings[:cadir])
+        FileUtilities.ensure_dir(settings[:certdir])
+        FileUtilities.ensure_dir(settings[:privatekeydir])
+
+        public_files = [
           [settings[:cacert], [int_cert, root_cert]],
-          [settings[:cakey], int_key],
-          [settings[:rootkey], root_key],
-          [settings[:cacrl], [int_crl, root_crl]]
+          [settings[:cacrl], [int_crl, root_crl]],
+          [settings[:hostcert], master_cert],
+          [settings[:localcacert], [int_cert, root_cert]],
+          [settings[:localcacrl], [int_crl, root_crl]],
         ]
 
-        file_properties.each do |location, content|
+        private_files = [
+          [settings[:hostprivkey], master_key],
+          [settings[:rootkey], root_key],
+          [settings[:cakey], int_key],
+        ]
+
+        public_files.each do |location, content|
+          @logger.warn "#{location} exists, overwriting" if File.exist?(location)
+          FileUtilities.write_file(location, content, 0644)
+        end
+
+        private_files.each do |location, content|
           @logger.warn "#{location} exists, overwriting" if File.exist?(location)
           FileUtilities.write_file(location, content, 0640)
         end
@@ -160,7 +194,7 @@ BANNER
         crl
       end
 
-      def sign_intermediate(ca_key, ca_cert, csr, valid_until, signing_digest, subject_alt_names)
+      def sign_intermediate(ca_key, ca_cert, csr, valid_until, signing_digest)
         cert = OpenSSL::X509::Certificate.new
 
         cert.public_key = csr.public_key
@@ -178,13 +212,34 @@ BANNER
           cert.add_extension(extension)
         end
 
+        cert.sign(ca_key, signing_digest)
+
+        cert
+      end
+
+      def sign_master_cert(int_key, int_cert, csr, valid_until, signing_digest, subject_alt_names)
+        cert = OpenSSL::X509::Certificate.new
+        cert.public_key = csr.public_key
+        cert.subject = csr.subject
+        cert.issuer = int_cert.subject
+        cert.version = 2
+        cert.serial = 1
+
+        cert.not_before = CERT_VALID_FROM
+        cert.not_after = valid_until
+
+        ef = extension_factory_for(int_cert, cert)
+        MASTER_EXTENSIONS.each do |ext|
+          extension = ef.create_extension(*ext)
+          cert.add_extension(extension)
+        end
+
         if !subject_alt_names.empty?
           alt_names_ext = ef.create_extension("subjectAltName", subject_alt_names, false)
           cert.add_extension(alt_names_ext)
         end
 
-        cert.sign(ca_key, signing_digest)
-
+        cert.sign(int_key, signing_digest)
         cert
       end
 
@@ -194,13 +249,13 @@ BANNER
       # 1) Specified on the CLI
       # 2) Specified in settings
       # 3) Defaults
-      def choose_alt_names(cli_alt_names, settings_alt_names)
+      def choose_alt_names(cli_alt_names, settings_alt_names, certname)
         if !cli_alt_names.empty?
           sans = cli_alt_names
         elsif !settings_alt_names.empty?
           sans = settings_alt_names
         else
-          sans = "puppet, #{Facter.value(:fqdn)}, puppet.#{Facter.value(:domain)}"
+          sans = "puppet, #{certname}"
         end
         munge_alt_names(sans)
       end

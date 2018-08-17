@@ -126,6 +126,7 @@ module Puppetserver
         settings[:ca_server] =      overrides.fetch(:ca_server, '$server')
         settings[:ca_port] =        overrides.fetch(:ca_port, '$masterport')
         settings[:localcacert] =    overrides.fetch(:localcacert, '$certdir/ca.pem')
+        settings[:localcacrl] =     overrides.fetch(:localcacrl, '$ssldir/crl.pem')
         settings[:hostcert] =       overrides.fetch(:hostcert, '$certdir/$certname.pem')
         settings[:hostcrl] =        overrides.fetch(:hostcrl, '$ssldir/crl.pem')
         settings[:hostprivkey] =    overrides.fetch(:hostprivkey, '$privatekeydir/$certname.pem')
